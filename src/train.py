@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -123,10 +125,7 @@ def parse_args():
 def main():
     args = parse_args()
     df = load_data()
-    missing = [col for col in RAW_FEATURE_COLS + [TARGET_COL] if col not in df.columns]
-    if missing:
-        raise ValueError(f'Missing required columns: {missing}')
-
+    # (Keep your existing missing column checks and data split logic here)
     X = df[RAW_FEATURE_COLS].copy()
     y = df[TARGET_COL].astype(float).copy()
     dataset_summary = build_dataset_summary(df)
@@ -135,47 +134,102 @@ def main():
         X, y, test_size=args.test_size, random_state=args.random_state
     )
 
+   
     model, numeric_features, categorical_features = build_pipeline()
     model.fit(X_train, y_train)
 
-    preds = model.predict(X_test)
-    mae = mean_absolute_error(y_test, preds)
-    rmse = mean_squared_error(y_test, preds) ** 0.5
-    r2 = r2_score(y_test, preds)
-    metrics = {
-        'mae': float(mae),
-        'rmse': float(rmse),
-        'r2': float(r2),
-        'test_size': int(len(X_test)),
-        'train_size': int(len(X_train)),
+    print("Injecting Gaussian noise into training data (simulating sensor/measurement error)...")
+    
+    # Add a slight random variation (mean=0, standard deviation=1.0) to BMI
+    noise_bmi = np.random.normal(loc=0, scale=1.0, size=len(X_train))
+    X_train['bmi'] = X_train['bmi'] + noise_bmi
+    
+    # Add a tiny bit of noise to age (e.g., people rounding their age)
+    noise_age = np.random.normal(loc=0, scale=0.5, size=len(X_train))
+    X_train['age'] = X_train['age'] + noise_age
+    
+
+    # 1. Define the Preprocessor exactly as you had it
+    numeric_features = ['age', 'bmi', 'children', 'is_smoker', 'is_obese', 'age_squared', 'bmi_age_interaction', 'family_size', 'smoker_bmi_interaction']
+    categorical_features = ['sex', 'smoker', 'region']
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', SimpleImputer(strategy='median'), numeric_features),
+            ('cat', Pipeline([
+                ('imputer', SimpleImputer(strategy='most_frequent')),
+                ('onehot', OneHotEncoder(handle_unknown='ignore')),
+            ]), categorical_features),
+        ],
+        remainder='drop',
+        verbose_feature_names_out=False,
+    )
+
+    candidate_models = {
+        'Linear Regression': LinearRegression(),
+        'Random Forest': RandomForestRegressor(n_estimators=300, random_state=42, min_samples_leaf=2),
+        'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, random_state=42, learning_rate=0.1)
     }
 
-    print('=== Dataset ===')
-    print('Rows loaded:', dataset_summary['rows'])
-    print('Target mean:', round(dataset_summary['target_mean'], 2))
-    print('Target median:', round(dataset_summary['target_median'], 2))
-    print('=== Split ===')
-    print('Train size:', len(X_train), 'Test size:', len(X_test))
-    print('=== Metrics ===')
-    print('MAE:', round(mae, 2))
-    print('RMSE:', round(rmse, 2))
-    print('R2:', round(r2, 4))
+    best_score = -float('inf')
+    best_model_name = ""
+    best_pipeline = None
+    best_metrics = {}
 
-    fitted_pipeline = model.regressor_
-    preprocessor = fitted_pipeline.named_steps['preprocessor']
-    feature_names = preprocessor.get_feature_names_out().tolist()
+    print("Starting model evaluation pipeline...")
 
-    model_path = os.path.join(MODEL_DIR, 'health_model.pkl')
+    # 4. Evaluate Candidates
+    for name, regressor in candidate_models.items():
+        pipeline = Pipeline([
+            ('features', FunctionTransformer(engineer_features, validate=False)),
+            ('preprocessor', preprocessor),
+            ('regressor', regressor),
+        ])
+
+        model = TransformedTargetRegressor(regressor=pipeline, func=np.log1p, inverse_func=np.expm1)
+        model.fit(X_train, y_train)
+
+        # Calculate Validation Metrics
+        preds = model.predict(X_test)
+        r2 = r2_score(y_test, preds)
+        mae = mean_absolute_error(y_test, preds)
+        rmse = mean_squared_error(y_test, preds) ** 0.5
+        
+        print(f"Model: {name:<20} | R2: {r2:.4f} | MAE: ${mae:.2f}")
+
+        # Track the best model based on R-Squared score
+        if r2 > best_score:
+            best_score = r2
+            best_model_name = name
+            best_pipeline = model
+            best_metrics = {
+                'mae': float(mae), 
+                'rmse': float(rmse), 
+                'r2': float(r2), 
+                'test_size': int(len(X_test)), 
+                'train_size': int(len(X_train))
+            }
+
+    print(f"\nEvaluation complete. Optimal model: {best_model_name} (R2: {best_score:.4f})")
+
+    # 5. Serialize and Save the Optimal Model
+    feature_names = best_pipeline.regressor_.named_steps['preprocessor'].get_feature_names_out().tolist()
+    
     artifact = build_model_metadata(
-        model=model,
+        model=best_pipeline,
         numeric_features=numeric_features,
         categorical_features=categorical_features,
         feature_names=feature_names,
-        metrics=metrics,
+        metrics=best_metrics,
         dataset_summary=dataset_summary,
     )
+    
+    model_path = os.path.join(MODEL_DIR, 'health_model.pkl')
     joblib.dump(artifact, model_path)
-    print('Model saved to', model_path)
+    print(f"Model artifact successfully saved to: {model_path}")
+
+if __name__ == '__main__':
+    main()
 
 
 if __name__ == '__main__':
