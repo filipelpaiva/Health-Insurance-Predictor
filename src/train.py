@@ -14,6 +14,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import cross_val_score, KFold
 
 from feature_utils import engineer_features
 
@@ -124,20 +125,22 @@ def parse_args():
 
 def main():
     args = parse_args()
-    df = load_data()
-    # (Keep your existing missing column checks and data split logic here)
+    
+    df = pd.read_csv('data/insurance.csv')
+    
+    # Define features and target
+    RAW_FEATURE_COLS = ['age', 'sex', 'bmi', 'children', 'smoker', 'region']
+    TARGET_COL = 'charges'
+
     X = df[RAW_FEATURE_COLS].copy()
     y = df[TARGET_COL].astype(float).copy()
-    dataset_summary = build_dataset_summary(df)
 
+    # Split the data
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.random_state
     )
 
-   
-    model, numeric_features, categorical_features = build_pipeline()
-    model.fit(X_train, y_train)
-
+    # Noise 
     print("Injecting Gaussian noise into training data (simulating sensor/measurement error)...")
     
     # Add a slight random variation (mean=0, standard deviation=1.0) to BMI
@@ -147,10 +150,10 @@ def main():
     # Add a tiny bit of noise to age (e.g., people rounding their age)
     noise_age = np.random.normal(loc=0, scale=0.5, size=len(X_train))
     X_train['age'] = X_train['age'] + noise_age
-    
+    # ==========================================
 
-    # 1. Define the Preprocessor exactly as you had it
-    numeric_features = ['age', 'bmi', 'children', 'is_smoker', 'is_obese', 'age_squared', 'bmi_age_interaction', 'family_size', 'smoker_bmi_interaction']
+    # Define the Preprocessor
+    numeric_features = ['age', 'bmi', 'children'] 
     categorical_features = ['sex', 'smoker', 'region']
 
     preprocessor = ColumnTransformer(
@@ -165,72 +168,56 @@ def main():
         verbose_feature_names_out=False,
     )
 
+    # Define Candidate Models
     candidate_models = {
         'Linear Regression': LinearRegression(),
         'Random Forest': RandomForestRegressor(n_estimators=300, random_state=42, min_samples_leaf=2),
         'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, random_state=42, learning_rate=0.1)
     }
 
-    best_score = -float('inf')
+    best_cv_score = -float('inf')
     best_model_name = ""
-    best_pipeline = None
-    best_metrics = {}
+    champion_model = None
 
-    print("Starting model evaluation pipeline...")
+    print("\nStarting 5-Fold Model Comparison...")
+    
+    # Define the 5-Fold Cross Validation strategy
+    from sklearn.model_selection import KFold, cross_val_score 
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
-    # 4. Evaluate Candidates
+    # Evaluate Candidates
     for name, regressor in candidate_models.items():
         pipeline = Pipeline([
-            ('features', FunctionTransformer(engineer_features, validate=False)),
             ('preprocessor', preprocessor),
             ('regressor', regressor),
         ])
 
         model = TransformedTargetRegressor(regressor=pipeline, func=np.log1p, inverse_func=np.expm1)
-        model.fit(X_train, y_train)
 
-        # Calculate Validation Metrics
-        preds = model.predict(X_test)
-        r2 = r2_score(y_test, preds)
-        mae = mean_absolute_error(y_test, preds)
-        rmse = mean_squared_error(y_test, preds) ** 0.5
-        
-        print(f"Model: {name:<20} | R2: {r2:.4f} | MAE: ${mae:.2f}")
+        # Calculate R2 across 5 folds
+        r2_scores = cross_val_score(model, X_train, y_train, cv=kf, scoring='r2')
 
-        # Track the best model based on R-Squared score
-        if r2 > best_score:
-            best_score = r2
+        mean_r2 = r2_scores.mean()
+        std_r2 = r2_scores.std()
+
+        print(f"Model: {name:<20} | Mean R2: {mean_r2:.4f} (±{std_r2:.4f})")
+
+        # Track the optimal model
+        if mean_r2 > best_cv_score:
+            best_cv_score = mean_r2
             best_model_name = name
-            best_pipeline = model
-            best_metrics = {
-                'mae': float(mae), 
-                'rmse': float(rmse), 
-                'r2': float(r2), 
-                'test_size': int(len(X_test)), 
-                'train_size': int(len(X_train))
-            }
+            champion_model = model
 
-    print(f"\nEvaluation complete. Optimal model: {best_model_name} (R2: {best_score:.4f})")
+    print(f"\nModel Comparison Complete. Optimal Model: {best_model_name}")
 
-    # 5. Serialize and Save the Optimal Model
-    feature_names = best_pipeline.regressor_.named_steps['preprocessor'].get_feature_names_out().tolist()
+    # Train the optimal model on all the training data and save it
+    print(f"Training {best_model_name} on full training set for production...")
+    champion_model.fit(X_train, y_train)
     
-    artifact = build_model_metadata(
-        model=best_pipeline,
-        numeric_features=numeric_features,
-        categorical_features=categorical_features,
-        feature_names=feature_names,
-        metrics=best_metrics,
-        dataset_summary=dataset_summary,
-    )
-    
-    model_path = os.path.join(MODEL_DIR, 'health_model.pkl')
-    joblib.dump(artifact, model_path)
-    print(f"Model artifact successfully saved to: {model_path}")
-
-if __name__ == '__main__':
-    main()
-
+    model_path = os.path.join('models', 'health_model.pkl')
+    os.makedirs('models', exist_ok=True)
+    joblib.dump(champion_model, model_path)
+    print(f"Model successfully saved to: {model_path}")
 
 if __name__ == '__main__':
     main()
