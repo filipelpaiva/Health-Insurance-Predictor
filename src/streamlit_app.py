@@ -16,12 +16,39 @@ def load_model():
     return joblib.load(MODEL_PATH)
 
 
-store = load_model()
+def normalize_model_store(store):
+    if isinstance(store, dict):
+        bundle = dict(store)
+    else:
+        bundle = {'model': store}
+
+    model = bundle.get('model')
+    if model is None:
+        model = bundle
+        bundle['model'] = model
+
+    if not bundle.get('feature_names') and hasattr(model, 'regressor_'):
+        try:
+            preprocessor = model.regressor_.named_steps['preprocessor']
+            bundle['feature_names'] = list(preprocessor.get_feature_names_out())
+        except Exception:
+            bundle['feature_names'] = []
+
+    bundle.setdefault('feature_names', [])
+    bundle.setdefault('dataset_summary', {})
+    bundle.setdefault('metrics', {})
+    bundle.setdefault('feature_groups', {})
+    bundle.setdefault('raw_features', [])
+    bundle.setdefault('numeric_features', [])
+    return bundle
+
+
+store = normalize_model_store(load_model())
 model = store['model']
 feature_names = store['feature_names']
-dataset_summary = store.get('dataset_summary', {})
-metrics = store.get('metrics', {})
-feature_groups = store.get('feature_groups', {})
+dataset_summary = store['dataset_summary']
+metrics = store['metrics']
+feature_groups = store['feature_groups']
 
 st.set_page_config(page_title='Health Insurance Predictor', layout='wide', initial_sidebar_state='expanded')
 
@@ -111,9 +138,9 @@ with st.expander('Detalhes do treino e do dataset', expanded=False):
     left, right = st.columns(2)
     with left:
         st.write('**Features originais**')
-        st.write(feature_groups.get('raw', store.get('raw_features', [])))
+        st.write(feature_groups.get('raw', store['raw_features']))
         st.write('**Features numéricas usadas no pipeline**')
-        st.write(feature_groups.get('engineered_numeric', store.get('numeric_features', [])))
+        st.write(feature_groups.get('engineered_numeric', store['numeric_features']))
     with right:
         st.write('**Estatísticas do target**')
         st.write({
@@ -187,9 +214,12 @@ if predict:
         st.metric('Smoker', smoker)
 
     st.subheader('Feature importance')
-    regressor = store['model'].regressor_.named_steps['regressor']
-    importance = pd.Series(regressor.feature_importances_, index=feature_names).sort_values(ascending=False)
-    st.bar_chart(importance.head(10))
+    if hasattr(model, 'regressor_') and hasattr(model.regressor_.named_steps['regressor'], 'feature_importances_') and feature_names:
+        regressor = model.regressor_.named_steps['regressor']
+        importance = pd.Series(regressor.feature_importances_, index=feature_names).sort_values(ascending=False)
+        st.bar_chart(importance.head(10))
+    else:
+        st.info('Feature importance is unavailable for this model file.')
 
     st.subheader('Input used')
     st.dataframe(row, width='stretch')

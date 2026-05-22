@@ -15,11 +15,35 @@ def load_model():
     return joblib.load(MODEL_PATH)
 
 
-store = load_model()
+def normalize_model_store(store):
+  if isinstance(store, dict):
+    bundle = dict(store)
+  else:
+    bundle = {'model': store}
+
+  model = bundle.get('model')
+  if model is None:
+    model = bundle
+    bundle['model'] = model
+
+  if not bundle.get('feature_names') and hasattr(model, 'regressor_'):
+    try:
+      preprocessor = model.regressor_.named_steps['preprocessor']
+      bundle['feature_names'] = list(preprocessor.get_feature_names_out())
+    except Exception:
+      bundle['feature_names'] = []
+
+  bundle.setdefault('feature_names', [])
+  bundle.setdefault('dataset_summary', {})
+  bundle.setdefault('metrics', {})
+  return bundle
+
+
+store = normalize_model_store(load_model())
 model = store['model']
 feature_names = store['feature_names']
-dataset_summary = store.get('dataset_summary', {})
-metrics = store.get('metrics', {})
+dataset_summary = store['dataset_summary']
+metrics = store['metrics']
 
 app = Flask(__name__)
 
