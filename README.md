@@ -28,7 +28,6 @@ Prever o valor anual de `charges` a partir de variáveis estruturadas do pacient
 - `data/insurance.csv` - dataset base
 - `src/train.py` - treino do modelo e exportação do artefacto
 - `src/feature_utils.py` - engenharia de atributos
-- `src/app.py` - demo Flask
 - `src/streamlit_app.py` - interface Streamlit explicativa
 - `models/` - modelo treinado
 
@@ -40,13 +39,7 @@ Prever o valor anual de `charges` a partir de variáveis estruturadas do pacient
 python src/train.py
 ```
 
-2. Abrir a app Flask:
-
-```bash
-python src/app.py
-```
-
-3. Abrir a app Streamlit:
+2. Abrir a app Streamlit:
 
 ```bash
 streamlit run src/streamlit_app.py
